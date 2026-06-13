@@ -169,9 +169,14 @@ func TestLowUtilizationSignatureMirror(t *testing.T) {
 	}
 }
 
-// TestProtoMirrorEnumNumbers pins the mirrored enum numbers to the proto
-// contract values; a drift here means the mirror diverged from the contract.
-func TestProtoMirrorEnumNumbers(t *testing.T) {
+// TestProtoEnumNumbers pins the GENERATED gpufleet.v1 enum numbers (consumed
+// here via the aliases in protomirror.go) to the wire values this library's
+// math and the open<->closed registry depend on. With the hand-rolled mirror
+// gone the local constants ARE the gen values, so this no longer guards a
+// mirror; it is a contract regression pin — if a future proto tag renumbers
+// LOW_UTILIZATION/ABSTAIN/etc., the build picks up the new gen value and this
+// test fails loudly instead of silently shifting attribution semantics.
+func TestProtoEnumNumbers(t *testing.T) {
 	cases := []struct {
 		name string
 		got  int32

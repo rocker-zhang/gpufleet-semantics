@@ -1,74 +1,91 @@
 package semantics
 
+import (
+	gpufleetv1 "github.com/rocker-zhang/gpufleet-proto/gen/go/gpufleet/v1"
+)
+
 // ----------------------------------------------------------------------------
-// proto contract mirror (thin, hand-rolled)
+// proto contract boundary (TASK-0029).
 //
-// This file mirrors the SHAPES of the open `gpufleet.v1` contracts that this
-// library produces/consumes, so the pure math here can speak the boundary
-// vocabulary WITHOUT taking a hard build dependency on the generated proto
-// module today.
+// The open `gpufleet.v1` contracts are now published at a fixed tag and vendored
+// read-only (require .../gen/go v0.1.0 + local replace => ../proto/gen/go, the
+// same convention agent uses). Per TASK-0017 DoD#3 / TASK-0029 this module now
+// consumes the REAL generated types for the boundary ENUMS, so there is exactly
+// ONE definition of each enum shape (the generated one) — the hand-rolled enum
+// mirror is gone.
 //
-// Why a mirror and not a direct import (RULES §D, CONTRACTS.md §4):
-//   - CONTRACTS.md §4 says Go consumers vendor the contracts at a *published,
-//     fixed tag* (`require github.com/.../gen/go vX.Y.Z`). At the time of this
-//     task the proto module is generated but not yet published/tagged, and its
-//     baseline is not yet clean on main (buf breaking). Pinning a floating ref
-//     or a local `replace` to an absolute path is explicitly disallowed.
-//   - This module must stay buildable and testable as a pure, standalone lib
-//     and must NOT block on proto tooling (per the task card).
+//   - SignalSource / FaultClass / GateSignature are plain int32 enums in gen.
+//     They are exposed here as `type` ALIASES to the generated types, with the
+//     local constant names kept as aliases to the generated enum values. This
+//     keeps semantics' exported API byte-for-byte stable (same type identities,
+//     same constant names) while removing the duplicate definition: a value
+//     produced here is literally a gpufleetv1.SignalSource, etc.
 //
-// The numbers/field names below are copied 1:1 from
-//   proto/schema/gpufleet/v1/{verdict,signal}.proto
-// and verified against proto/gen/go. They are kept additive-only and in the
-// same wire order so the switch-over is mechanical.
-//
-// TODO(proto): once `gpufleet/proto/gen/go` is published at a fixed tag, drop
-// this file, add `require github.com/rocker-zhang/gpufleet-proto/gen/go vX.Y.Z`
-// to go.mod, and alias these types to the generated ones
-// (e.g. `type CostImpact = gpufleetv1.CostImpact`) so there is exactly one
-// definition of the boundary shape. See CONTRACTS.md §4 / D-0008.
+// CostImpact is deliberately NOT aliased to gpufleetv1.CostImpact — see the note
+// on the CostImpact type below for the precise, proven reason.
 // ----------------------------------------------------------------------------
 
 // SignalSource is the independence class used by the >=2-corroborating-signal
-// gate: two facts from the same source do NOT corroborate. Mirror of
-// gpufleet.v1.SignalSource (signal.proto). Numbers are load-bearing.
-type SignalSource int32
+// gate: two facts from the same source do NOT corroborate. This is an ALIAS to
+// the generated gpufleet.v1.SignalSource — one definition, in the contract.
+type SignalSource = gpufleetv1.SignalSource
 
 const (
-	SignalSourceUnspecified SignalSource = 0
-	SignalSourceDCGM        SignalSource = 1
-	SignalSourceDmesgXID    SignalSource = 2
-	SignalSourceNCCL        SignalSource = 3
-	SignalSourcePrometheus  SignalSource = 4
-	SignalSourceScheduler   SignalSource = 5
-	SignalSourceProc        SignalSource = 6
+	SignalSourceUnspecified = gpufleetv1.SignalSource_SIGNAL_SOURCE_UNSPECIFIED
+	SignalSourceDCGM        = gpufleetv1.SignalSource_SIGNAL_SOURCE_DCGM
+	SignalSourceDmesgXID    = gpufleetv1.SignalSource_SIGNAL_SOURCE_DMESG_XID
+	SignalSourceNCCL        = gpufleetv1.SignalSource_SIGNAL_SOURCE_NCCL
+	SignalSourcePrometheus  = gpufleetv1.SignalSource_SIGNAL_SOURCE_PROMETHEUS
+	SignalSourceScheduler   = gpufleetv1.SignalSource_SIGNAL_SOURCE_SCHEDULER
+	SignalSourceProc        = gpufleetv1.SignalSource_SIGNAL_SOURCE_PROC
 )
 
-// FaultClass is the closed deterministic outcome set. Only the subset this
-// library can deterministically reason about (the standalone cost wedge) is
-// mirrored; the rest of the enum is owned by the gate. Mirror of
-// gpufleet.v1.FaultClass (verdict.proto). Numbers are load-bearing.
-type FaultClass int32
+// FaultClass is the closed deterministic outcome set. This library only ever
+// produces the subset it can deterministically reason about (the standalone
+// cost wedge: UNSPECIFIED / ABSTAIN / LOW_UTILIZATION); the rest of the enum is
+// owned by the gate. ALIAS to the generated gpufleet.v1.FaultClass.
+type FaultClass = gpufleetv1.FaultClass
 
 const (
-	FaultClassUnspecified    FaultClass = 0
-	FaultClassAbstain        FaultClass = 1
-	FaultClassLowUtilization FaultClass = 9
+	FaultClassUnspecified    = gpufleetv1.FaultClass_FAULT_CLASS_UNSPECIFIED
+	FaultClassAbstain        = gpufleetv1.FaultClass_FAULT_CLASS_ABSTAIN
+	FaultClassLowUtilization = gpufleetv1.FaultClass_FAULT_CLASS_LOW_UTILIZATION
 )
 
 // GateSignature is the versioned signature-id registry: audit metadata only,
-// NEVER an input to the class decision. Mirror of gpufleet.v1.GateSignature
-// (verdict.proto). Numbers are load-bearing.
-type GateSignature int32
+// NEVER an input to the class decision. ALIAS to gpufleet.v1.GateSignature.
+type GateSignature = gpufleetv1.GateSignature
 
 const (
-	GateSignatureUnspecified    GateSignature = 0
-	GateSignatureLowUtilization GateSignature = 6
+	GateSignatureUnspecified    = gpufleetv1.GateSignature_GATE_SIGNATURE_UNSPECIFIED
+	GateSignatureLowUtilization = gpufleetv1.GateSignature_GATE_SIGNATURE_LOW_UTILIZATION
 )
 
 // CostImpact is the deterministic $ attribution for a window. Absent/zero means
-// "could not be computed", never "free". Mirror of gpufleet.v1.CostImpact
-// (verdict.proto): field names and order match the proto exactly.
+// "could not be computed", never "free". Field names and order match
+// gpufleet.v1.CostImpact (verdict.proto) exactly, so producing the proto message
+// at the agent's serialization boundary is a mechanical field copy.
+//
+// Why this is a plain value struct and NOT `type CostImpact = gpufleetv1.CostImpact`
+// (unlike the enums above):
+//
+//	gpufleetv1.CostImpact is a generated protobuf MESSAGE. It embeds
+//	protoimpl.MessageState, which carries pragma.DoNotCopy ([0]sync.Mutex) and
+//	pragma.DoNotCompare ([0]func()). semantics is a PURE VALUE library: CostImpact
+//	is embedded by value in CostWedge / JobCostImpact and those are copied by
+//	value pervasively (slice append, range, value returns) here AND in the agent
+//	consumer. Aliasing CostImpact to the proto message makes `go vet` copylocks
+//	fire on every such copy in BOTH modules (proven: "return copies lock value:
+//	CostWedge contains CostImpact contains protoimpl.MessageState contains
+//	sync.Mutex"), and the no-compare pragma forbids `==`. Unifying CostImpact onto
+//	the gen message would therefore require changing CostWedge/JobCostImpact to
+//	hold *CostImpact pointers — a public-API break that also touches the agent
+//	module (out of scope for this card, RULES §D / semantics CLAUDE.md §6).
+//
+// The boundary shape is still single-sourced where it can be cleanly aliased
+// (the three enums above). The remaining duplication is this one value struct,
+// tracked as a blocker on TASK-0029 (see the module return note) for a follow-up
+// that owns the cross-module pointer/refactor or a plain-struct proto variant.
 type CostImpact struct {
 	// Computed reports whether a cost could be computed at all (mappings were
 	// priced). When false, the USD fields are zero and carry no meaning.
