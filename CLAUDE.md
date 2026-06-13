@@ -49,6 +49,36 @@ Inherits all of `../RULES.md`. Module-specific hard lines:
 - **Abstain + report blocker** if a task needs a contract change or another module: write a short blocker note (what was needed, which module/contract it touches) and stop — do not implement a cross-repo workaround.
 - **Provenance:** personal hardware, personal time; no externally-sourced content.
 
+## 6a. Boundary-shape single-sourcing & the CostImpact value mirror (TASK-0029 / TASK-0035)
+
+The open `gpufleet.v1` contracts are vendored read-only; this module consumes the
+**real generated types** for the boundary shapes so each shape has one definition.
+
+- **Enums** (`SignalSource` / `FaultClass` / `GateSignature`) are `type` **aliases**
+  to the gen enums (plain `int32`), so a value here *is* the gen value. Their wire
+  numbers are pinned by `TestProtoEnumNumbers`.
+- **`CostImpact`** is **deliberately NOT aliased** — it is a documented plain
+  **value-type mirror** of `gpufleet.v1.CostImpact`. This is the accepted
+  **option A** of TASK-0035, not an accidental duplicate.
+  - *Why no alias:* the gen `CostImpact` is a protobuf **message** embedding
+    `protoimpl.MessageState` (`sync.Mutex` via `pragma.DoNotCopy`, plus
+    `DoNotCompare`). semantics is a pure value-math lib that embeds `CostImpact`
+    by value in `CostWedge`/`JobCostImpact` and copies it pervasively (slice
+    append, range, value return) here **and** in the agent consumer. Aliasing
+    makes `go vet` **copylocks** fire in both modules, and the no-compare pragma
+    forbids `==`. Unifying onto the gen message would require `*CostImpact`
+    pointers — a **public-API break that also touches `agent`** (options B/C),
+    out of scope for this card.
+  - *Anti-drift:* because the two definitions are physically distinct, they are
+    pinned **field-by-field** by `TestCostImpactProtoFieldParity` — Go field
+    name + type, protobuf wire **number** + **kind**, and **JSON name**, read
+    from the gen message's own protoreflect descriptor (the canonical source of
+    wire/JSON semantics). Any rename / renumber / kind change / add / remove on
+    either side fails the test loudly, so the agent's mechanical field-copy at the
+    serialization boundary stays correct.
+  - The decision + proof also live as a code comment on the `CostImpact` type in
+    `protomirror.go`.
+
 ## 7. 模块路线图
 - **M1** — device→job + MFU/tensor-active/straggler/`$`cost math, deterministic unit tests, consumes proto v0.1.0. (PRIMARY milestone for this module.)
 - **M2** — stabilize the attribution API consumed by `agent` for the evidence pack; lock the cost/MFU output shape behind the "money story" demo.

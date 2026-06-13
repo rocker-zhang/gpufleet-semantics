@@ -64,7 +64,11 @@ const (
 // CostImpact is the deterministic $ attribution for a window. Absent/zero means
 // "could not be computed", never "free". Field names and order match
 // gpufleet.v1.CostImpact (verdict.proto) exactly, so producing the proto message
-// at the agent's serialization boundary is a mechanical field copy.
+// at the agent's serialization boundary is a mechanical field copy. This 1:1
+// correspondence (Go field name + type, wire field number + kind, JSON name) is
+// NOT left to convention: TestCostImpactProtoFieldParity pins every field against
+// the gen message's own protoreflect descriptor, so the two can't drift silently
+// (the same regression-pin discipline TestProtoEnumNumbers gives the enums).
 //
 // Why this is a plain value struct and NOT `type CostImpact = gpufleetv1.CostImpact`
 // (unlike the enums above):
@@ -82,10 +86,16 @@ const (
 //	hold *CostImpact pointers — a public-API break that also touches the agent
 //	module (out of scope for this card, RULES §D / semantics CLAUDE.md §6).
 //
-// The boundary shape is still single-sourced where it can be cleanly aliased
-// (the three enums above). The remaining duplication is this one value struct,
-// tracked as a blocker on TASK-0029 (see the module return note) for a follow-up
-// that owns the cross-module pointer/refactor or a plain-struct proto variant.
+// DECISION (TASK-0035, option A — accepted): this value mirror is the DELIBERATE,
+// documented resolution, not an accidental duplicate. The boundary shape is
+// single-sourced where it can be cleanly aliased (the three enums above); for
+// CostImpact, "one definition" via aliasing is impossible without a copylocks
+// violation, and unifying onto the gen message via pointers is a public-API +
+// cross-module (agent) break that is out of scope here (options B/C). We instead
+// keep the plain value struct AND guard it with a field-parity pin test
+// (TestCostImpactProtoFieldParity) so the deliberate mirror cannot drift from the
+// contract. Revisit only if a future card owns the cross-module pointer refactor
+// or a plain-struct proto variant.
 type CostImpact struct {
 	// Computed reports whether a cost could be computed at all (mappings were
 	// priced). When false, the USD fields are zero and carry no meaning.

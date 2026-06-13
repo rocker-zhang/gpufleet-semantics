@@ -1,6 +1,12 @@
 package semantics
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	gpufleetv1 "github.com/rocker-zhang/gpufleet-proto/gen/go/gpufleet/v1"
+	"google.golang.org/protobuf/reflect/protoreflect"
+)
 
 // TestStandaloneCostNoFaultSignals proves the cost wedge is computed with ZERO
 // fault/RCA signals (TASK-0015): a plain measurement window, no gate, no fault,
@@ -196,5 +202,108 @@ func TestProtoEnumNumbers(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("%s = %d, want %d (proto-contract drift)", c.name, c.got, c.want)
 		}
+	}
+}
+
+// TestCostImpactProtoFieldParity pins semantics' value-mirror CostImpact to the
+// generated gpufleet.v1.CostImpact message FIELD-BY-FIELD.
+//
+// Per TASK-0035 (option A) the local CostImpact is a DELIBERATE value-type mirror
+// of the proto message — it is NOT aliased, because the gen message embeds
+// protoimpl.MessageState (sync.Mutex / DoNotCopy) and this is a pure value-math
+// library that copies CostImpact by value pervasively; aliasing makes `go vet`
+// copylocks fire (see the note on the CostImpact type in protomirror.go). Because
+// the two definitions are physically distinct, they could drift silently. This
+// test makes that impossible: it asserts a 1:1 correspondence between the local
+// struct fields and the gen message's fields on every axis that defines the
+// boundary shape — Go field name, Go field type, protobuf wire field NUMBER,
+// protobuf wire KIND, and protobuf JSON name — using the gen message's own
+// protoreflect descriptor as the canonical source of wire/JSON semantics.
+//
+// If a future proto tag renames a field, renumbers it, changes its kind, adds or
+// removes a field, this fails loudly instead of letting the agent serialize a
+// mechanically-copied-but-now-wrong CostImpact.
+func TestCostImpactProtoFieldParity(t *testing.T) {
+	// Canonical wire/JSON semantics: read straight off the gen message descriptor.
+	genFields := (&gpufleetv1.CostImpact{}).ProtoReflect().Descriptor().Fields()
+
+	// What each local (semantics) field MUST map to in the gen contract. Keyed by
+	// the local Go field name; the gen protobuf field is looked up by number so a
+	// silent renumber is caught.
+	type want struct {
+		goType   reflect.Kind        // Go type of BOTH structs' field
+		number   protoreflect.FieldNumber
+		kind     protoreflect.Kind   // protobuf wire kind
+		protoGo  string              // gen Go field name (proto-generated)
+		jsonName string              // protobuf JSON name
+	}
+	wantByLocal := map[string]want{
+		"Computed":   {reflect.Bool, 1, protoreflect.BoolKind, "Computed", "computed"},
+		"UsdWindow":  {reflect.Float64, 2, protoreflect.DoubleKind, "UsdWindow", "usdWindow"},
+		"UsdPerHour": {reflect.Float64, 3, protoreflect.DoubleKind, "UsdPerHour", "usdPerHour"},
+		"Basis":      {reflect.String, 4, protoreflect.StringKind, "Basis", "basis"},
+	}
+
+	localT := reflect.TypeOf(CostImpact{})
+	genT := reflect.TypeOf(gpufleetv1.CostImpact{})
+
+	// 1:1 cardinality: the local struct must have exactly the mirrored fields and
+	// nothing else, so an added local field can't drift away from the contract.
+	if localT.NumField() != len(wantByLocal) {
+		t.Fatalf("semantics.CostImpact has %d fields, want %d (mirror drift: a field was added/removed vs gpufleet.v1.CostImpact)",
+			localT.NumField(), len(wantByLocal))
+	}
+
+	for i := 0; i < localT.NumField(); i++ {
+		lf := localT.Field(i)
+		w, ok := wantByLocal[lf.Name]
+		if !ok {
+			t.Errorf("semantics.CostImpact has unexpected field %q with no gen mapping (mirror drift)", lf.Name)
+			continue
+		}
+
+		// Local Go field kind.
+		if lf.Type.Kind() != w.goType {
+			t.Errorf("local CostImpact.%s Go kind = %v, want %v", lf.Name, lf.Type.Kind(), w.goType)
+		}
+
+		// Gen Go field: same name, same Go kind (mechanical field copy must hold).
+		gf, ok := genT.FieldByName(w.protoGo)
+		if !ok {
+			t.Errorf("gpufleet.v1.CostImpact has no Go field %q (mirror drift)", w.protoGo)
+			continue
+		}
+		if gf.Type.Kind() != w.goType {
+			t.Errorf("gen CostImpact.%s Go kind = %v, want %v", w.protoGo, gf.Type.Kind(), w.goType)
+		}
+		if lf.Name != gf.Name {
+			t.Errorf("field name mismatch: local %q vs gen %q (mechanical copy assumes identical names)", lf.Name, gf.Name)
+		}
+
+		// Canonical wire/JSON semantics from the gen descriptor, looked up by the
+		// expected wire number.
+		gd := genFields.ByNumber(w.number)
+		if gd == nil {
+			t.Errorf("gpufleet.v1.CostImpact has no wire field number %d (renumber drift for local %s)", w.number, lf.Name)
+			continue
+		}
+		if gd.Kind() != w.kind {
+			t.Errorf("wire kind for field %d (%s) = %v, want %v", w.number, lf.Name, gd.Kind(), w.kind)
+		}
+		if got := string(gd.JSONName()); got != w.jsonName {
+			t.Errorf("JSON name for field %d (%s) = %q, want %q", w.number, lf.Name, got, w.jsonName)
+		}
+		// The descriptor's Go field name (TextName is the proto field name) must
+		// match what we expect the gen Go struct to expose.
+		if got := gd.JSONName(); string(got) != w.jsonName {
+			t.Errorf("descriptor JSON name = %q, want %q", got, w.jsonName)
+		}
+	}
+
+	// Total wire-field count parity: gen message must have exactly the mirrored
+	// number of fields too (catches a gen field added with no local counterpart).
+	if genFields.Len() != len(wantByLocal) {
+		t.Errorf("gpufleet.v1.CostImpact has %d wire fields, want %d (a proto field was added/removed; update the mirror)",
+			genFields.Len(), len(wantByLocal))
 	}
 }
