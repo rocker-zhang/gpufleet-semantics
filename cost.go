@@ -155,6 +155,103 @@ type JobCostImpact struct {
 	Impact CostImpact
 }
 
+// RankedDevice is one device's place in a wasted-$ ranking for a single window
+// (TASK-0055, G4 money-story wedge). It carries the device identity, its window
+// waste/burn-rate, and whether the device was priced — so an UNPRICED device is
+// ranked honestly (Priced=false, WastedUSD/UsdPerHour=0) rather than fabricating
+// a $ value. This is the deterministic input to the cli "TOP WASTED-$" digest.
+type RankedDevice struct {
+	Device Device
+	// WastedUSD is the per-WINDOW wasted spend (CostWedge.WastedUSD). Zero when
+	// the device is unpriced (Priced=false) — never a fabricated number.
+	WastedUSD float64
+	// UsdPerHour is the per-HOUR burn rate at the current idle fraction. Zero when
+	// unpriced.
+	UsdPerHour float64
+	// IdleFraction is the window idle fraction (1-MFU), carried for context. It is
+	// always meaningful (derived from MFU) regardless of pricing.
+	IdleFraction float64
+	// MFU is the device's measured model-FLOPs-utilization for the window.
+	MFU float64
+	// Priced is false when the device had no $/hour rate; then the $ fields are
+	// zero and carry no meaning (the cli digest degrade-marks them, never $0).
+	Priced bool
+}
+
+// WastedRanking is the result of TopWastedUSD for one window (TASK-0055): the
+// devices ranked by wasted-$ descending plus the window totals.
+//
+// SCOPE: this is a SINGLE-WINDOW digest. A multi-window "wasted-$ last week"
+// rollup needs a historical store to accumulate per-window waste over time,
+// which is OUT OF SCOPE here (the remaining TASK-0055 follow-up). The totals
+// below are for exactly the one window of CostWedges passed in. The $ values
+// are only as real as the configured/spec $/hour rate (an operator/infra input,
+// placeholder until the operator supplies it) and stay device-level because
+// vanilla DCGM carries no job label for job-level attribution.
+type WastedRanking struct {
+	// Ranked is every input device, ordered by WastedUSD descending with a stable
+	// tie-break by device UUID ascending. Unpriced devices (WastedUSD=0) sort to
+	// the end among the zero-waste devices, still UUID-ordered.
+	Ranked []RankedDevice
+	// TotalWastedUSD sums WastedUSD across all PRICED devices in the window.
+	TotalWastedUSD float64
+	// TotalUsdPerHour sums UsdPerHour across all PRICED devices: the window's
+	// aggregate idle burn rate.
+	TotalUsdPerHour float64
+	// AnyPriced is true when at least one device had a $/hour rate. When false the
+	// totals are zero and carry no meaning — the digest says so instead of "$0".
+	AnyPriced bool
+	// Priced / Unpriced count the devices in each pricing state, so the digest can
+	// honestly state coverage (e.g. "3 of 5 devices unpriced").
+	Priced   int
+	Unpriced int
+}
+
+// TopWastedUSD ranks the per-device cost wedges of ONE window by wasted-$
+// descending and sums the window totals (TASK-0055, G4 money-story wedge). It is
+// a pure, deterministic function: identical wedges in -> byte-identical ranking
+// out, with a stable tie-break by device UUID ascending (so equal-waste devices
+// — notably the many $0 / unpriced ones — order reproducibly).
+//
+// It honors the existing unpriced semantics from costWedgeFromEff: a wedge whose
+// CostImpact was not Computed (no $/hour rate) contributes 0 to the totals and is
+// marked Priced=false, NEVER a fabricated $. Idle/MFU context is still carried
+// for every device since those are derived from measured FLOPs, not from price.
+//
+// SCOPE (see WastedRanking): single-window only; multi-window history, the real
+// $/hour rate, and job-level attribution are out of scope / operator inputs.
+func TopWastedUSD(wedges []CostWedge) WastedRanking {
+	out := WastedRanking{Ranked: make([]RankedDevice, 0, len(wedges))}
+	for _, w := range wedges {
+		priced := w.Impact.Computed
+		rd := RankedDevice{
+			Device:       w.Device.Device,
+			IdleFraction: w.IdleFraction,
+			MFU:          w.Device.MFU,
+			Priced:       priced,
+		}
+		if priced {
+			rd.WastedUSD = w.WastedUSD
+			rd.UsdPerHour = w.Impact.UsdPerHour
+			out.TotalWastedUSD += w.WastedUSD
+			out.TotalUsdPerHour += w.Impact.UsdPerHour
+			out.Priced++
+			out.AnyPriced = true
+		} else {
+			out.Unpriced++
+		}
+		out.Ranked = append(out.Ranked, rd)
+	}
+	// Deterministic: wasted-$ descending, stable tie-break by UUID ascending.
+	sort.Slice(out.Ranked, func(i, j int) bool {
+		if out.Ranked[i].WastedUSD != out.Ranked[j].WastedUSD {
+			return out.Ranked[i].WastedUSD > out.Ranked[j].WastedUSD
+		}
+		return out.Ranked[i].Device.UUID < out.Ranked[j].Device.UUID
+	})
+	return out
+}
+
 // LowUtilizationSignal is a deterministic, fault-free description of the
 // LOW_UTILIZATION condition for a device window, carrying the proto signature
 // id (mirror) for the open<->closed shared registry. It encodes the >=2
