@@ -53,9 +53,11 @@ func (p CostPolicy) withDefaults() CostPolicy {
 // always produced (TASK-0015): a healthy device simply has zero WastedUSD.
 type CostWedge struct {
 	Device DeviceEfficiency
-	// IdleFraction is the fraction of the window the device was NOT doing useful
-	// work, approximated as 1-MFU (clamped to [0,1]). It is the deterministic
-	// basis for wasted spend.
+	// IdleFraction is the MFU SHORTFALL (1-MFU, clamped to [0,1]) — the fraction
+	// of peak the device did NOT achieve. NOTE: this is "MFU headroom", not literal
+	// idleness: a device fully allocated but at low arithmetic intensity (MFU 0.4)
+	// reads as 0.6 here even though it never sat empty. "Wasted" spend below means
+	// "spend at sub-peak efficiency", not "spend on an empty GPU".
 	IdleFraction float64
 	// WastedUSD is the spend attributed to idle/low-utilization over the window:
 	// CostUSD * IdleFraction. Zero when CostPerHour is unknown or MFU == 1.
@@ -104,6 +106,11 @@ func costWedgeFromEff(eff DeviceEfficiency, spec DeviceSpec, policy CostPolicy) 
 		Basis:      "",
 	}
 	if priced {
+		// PER-DEVICE rate: this device's hourly burn at its current MFU shortfall.
+		// When CostImpacts are aggregated to a job/fleet (JobCostWedge sums them,
+		// as do TopWastedUSD), the resulting UsdPerHour is the AGGREGATE (sum of
+		// per-device rates), NOT a single-device rate — a consumer reading one
+		// job-scoped verdict must read its usd_per_hour as the job-wide total.
 		w.Impact.UsdPerHour = spec.CostPerHour * idle
 		w.Impact.Basis = fmt.Sprintf("%s idle %.0f%% x $%.2f/hr", eff.Device.UUID, idle*100, spec.CostPerHour)
 	}

@@ -29,11 +29,23 @@ type DeviceJob struct {
 	Job    Job
 }
 
+// suspiciousPeakFLOPS is a floor below which a PeakFLOPS is almost certainly a
+// TFLOP/s value passed without the ×1e12 conversion. Real GPU peaks are >= ~1e13
+// FLOP/s; 1e9 (1 GFLOP/s) is far below any real device yet far above a raw
+// TFLOP/s number (~1e2–1e3), so it cleanly catches the misconversion.
+const suspiciousPeakFLOPS = 1e9
+
 // DeviceSpec captures the fixed performance characteristics needed for MFU.
 // PeakFLOPS is the device's peak dense throughput in FLOP/s for the dtype the
 // job actually ran (caller picks the right peak, e.g. BF16 tensor-core peak).
+//
+// UNIT WARNING: PeakFLOPS is raw FLOP/s. The wire carries peak as TFLOP/s
+// (DeviceJobMapping.peak_tflops); the caller MUST convert by ×1e12. A missed
+// conversion makes PeakFLOPS ~1e12× too small, MFU ~0, and every device look
+// 100% idle → fabricated max waste. DeviceEff guards against this implausibly
+// small peak (see suspiciousPeakFLOPS) rather than silently fabricating idleness.
 type DeviceSpec struct {
-	PeakFLOPS   float64 // > 0
+	PeakFLOPS   float64 // raw FLOP/s, > 0 (convert wire TFLOP/s by ×1e12)
 	CostPerHour float64 // USD/hour for $ attribution; may be 0 if unknown
 }
 
@@ -86,6 +98,13 @@ func DeviceEff(s DeviceSample, spec DeviceSpec) (DeviceEfficiency, error) {
 		return DeviceEfficiency{}, ErrBadWindow
 	}
 	if spec.PeakFLOPS <= 0 {
+		return DeviceEfficiency{}, ErrBadPeak
+	}
+	// Catch a missed TFLOP/s→FLOP/s conversion: a real GPU peak is >= ~1e13 FLOP/s.
+	// A peak below suspiciousPeakFLOPS almost certainly means a TFLOP/s value was
+	// passed as FLOP/s, which would fabricate ~100% idle. Refuse rather than emit
+	// fabricated waste (honesty contract).
+	if spec.PeakFLOPS < suspiciousPeakFLOPS {
 		return DeviceEfficiency{}, ErrBadPeak
 	}
 	achievedRate := s.AchievedFLOPs / s.WindowSeconds
